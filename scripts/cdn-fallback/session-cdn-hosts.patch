@@ -974,7 +974,7 @@ index 57eaed2..b0c433d 100644
          .execute(connection)
          .await?;
 diff --git a/rust-srec/src/database/repositories/write_contract_tests.rs b/rust-srec/src/database/repositories/write_contract_tests.rs
-index 9cba96e..0a0f09f 100644
+index 9cba96e..efc9434 100644
 --- a/rust-srec/src/database/repositories/write_contract_tests.rs
 +++ b/rust-srec/src/database/repositories/write_contract_tests.rs
 @@ -427,6 +427,7 @@ async fn session_creation_and_end_modes_preserve_raw_values_defaults_and_idempot
@@ -985,7 +985,15 @@ index 9cba96e..0a0f09f 100644
          total_size_bytes: 77,
      };
      repo.create_session(&raw).await.unwrap();
-@@ -662,6 +663,7 @@ async fn connection_helpers_do_not_commit_the_callers_transaction() {
+@@ -467,6 +468,7 @@ async fn session_creation_and_end_modes_preserve_raw_values_defaults_and_idempot
+             }])
+             .unwrap(),
+         ),
++        cdn_hosts: Vec::new(),
+         total_size_bytes: 0,
+     };
+     assert_row(&repo.get_session("live").await.unwrap(), &live);
+@@ -662,6 +664,7 @@ async fn connection_helpers_do_not_commit_the_callers_transaction() {
          start_time: 123,
          end_time: None,
          titles: None,
