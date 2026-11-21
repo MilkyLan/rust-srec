@@ -1,5 +1,5 @@
 diff --git a/crates/platforms/src/extractor/platforms/douyin/builder.rs b/crates/platforms/src/extractor/platforms/douyin/builder.rs
-index 9336655..fca6f1c 100644
+index 9336655..a07a19e 100644
 --- a/crates/platforms/src/extractor/platforms/douyin/builder.rs
 +++ b/crates/platforms/src/extractor/platforms/douyin/builder.rs
 @@ -703,7 +703,7 @@ impl<'a> DouyinRequest<'a> {
@@ -57,7 +57,18 @@ index 9336655..fca6f1c 100644
      }
  
      fn create_offline_media_info(
-@@ -1298,6 +1335,23 @@ mod tests {
+@@ -1262,6 +1299,10 @@ mod tests {
+ 
+     fn parse_room_fixture(room: Value, mobile: bool, source: StreamSource) -> MediaInfo {
+         let config = Douyin::new(TEST_URL.to_string(), default_client(), None, None)
++            .double_screen(matches!(
++                source,
++                StreamSource::DoubleScreen | StreamSource::DoubleScreenOrigin
++            ))
+             .force_origin_quality(matches!(
+                 source,
+                 StreamSource::Origin | StreamSource::DoubleScreenOrigin
+@@ -1298,6 +1339,23 @@ mod tests {
          })
      }
  
