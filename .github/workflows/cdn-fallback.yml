@@ -93,13 +93,12 @@ jobs:
           if version != sys.argv[1]:
               sys.exit(f'Cargo version {version} differs from release version {sys.argv[1]}')
           PY
-          for patch in douyin.patch session-cdn-hosts.patch; do
-            if ! git apply --check "../scripts/cdn-fallback/$patch"; then
-              echo "::error::$patch needs review for $TAG. No image was published."
-              exit 1
-            fi
-            git apply "../scripts/cdn-fallback/$patch"
-          done
+          patch=../scripts/cdn-fallback/douyin.patch
+          if ! git apply --check "$patch"; then
+            echo "::error::douyin.patch needs review for $TAG. No image was published."
+            exit 1
+          fi
+          git apply "$patch"
           git diff --check
           printf 'revision=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 

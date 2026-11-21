@@ -8,9 +8,11 @@ The scheduled workflow checks once a day and skips versions with both images alr
 
 For a Douyin room, the recorder prefers eligible streams outside the CDN blacklist. The recorder keeps polling when every eligible stream is blacklisted. On the fifth consecutive check that finds the room live and only eligible blacklisted streams, it tries the streams from that check and emits a warning. An offline result, extraction error, or check without eligible streams resets the count. Both the built-in extractor and Streamlink use this selection rule. Other platforms continue to enforce the blacklist strictly.
 
+For Douyin, the CDN blacklist and preferences match substrings of the stream hostname, ignoring case. For example, `26.` matches `pull-flv-f26.douyinliving.com` and `26-admin.` matches `pull-flv-f26-admin.douyinliving.com`.
+
 ## Session CDN hosts
 
-Each recording session keeps a list of the CDN hostnames seen across its live checks, including candidates excluded by stream selection. Open **CDN hosts** below the duration on a session card. Each hostname appears once, for example `pull-flv-q13.douyincdn.com`. Sessions completed before this feature was installed show an empty list.
+Each recording session keeps a list of the CDN hostnames seen across its live checks, including candidates excluded by stream selection. Select **CDN** between **Explore** and the more options button to open the list in a popover. Each hostname appears once, for example `pull-flv-q13.douyincdn.com`. Sessions completed before this feature was installed show an empty list.
 
 ## Install with Docker Compose
 
