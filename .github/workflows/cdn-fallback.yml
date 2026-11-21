@@ -44,8 +44,9 @@ jobs:
           fi
           version=${tag#rust-srec-v}
           image=ghcr.io/${GITHUB_REPOSITORY,,}:$version-cdn-fallback
-          printf 'tag=%s\nversion=%s\nimage=%s\n' "$tag" "$version" "$image" >> "$GITHUB_OUTPUT"
-          printf 'Upstream release: %s\n\nTarget image: %s\n' "$tag" "$image" >> "$GITHUB_STEP_SUMMARY"
+          frontend=ghcr.io/${GITHUB_REPOSITORY,,}-frontend:$version-cdn-fallback
+          printf 'tag=%s\nversion=%s\nimage=%s\nfrontend=%s\n' "$tag" "$version" "$image" "$frontend" >> "$GITHUB_OUTPUT"
+          printf 'Upstream release: %s\n\nRecorder image: %s\n\nFrontend image: %s\n' "$tag" "$image" "$frontend" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -61,11 +62,14 @@ jobs:
         id: check
         env:
           IMAGE: ${{ steps.release.outputs.image }}
+          FRONTEND: ${{ steps.release.outputs.frontend }}
         shell: bash
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == schedule ]] && docker buildx imagetools inspect "$IMAGE" >/dev/null 2>&1; then
+          if [[ "$GITHUB_EVENT_NAME" == schedule ]] \
+            && docker buildx imagetools inspect "$IMAGE" >/dev/null 2>&1 \
+            && docker buildx imagetools inspect "$FRONTEND" >/dev/null 2>&1; then
             echo 'publish=false' >> "$GITHUB_OUTPUT"
-            printf '\nThe scheduled check found the version already published.\n' >> "$GITHUB_STEP_SUMMARY"
+            printf '\nThe scheduled check found both images already published.\n' >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'publish=true' >> "$GITHUB_OUTPUT"
           fi
@@ -89,15 +93,17 @@ jobs:
           if version != sys.argv[1]:
               sys.exit(f'Cargo version {version} differs from release version {sys.argv[1]}')
           PY
-          if ! git apply --check ../scripts/cdn-fallback/douyin.patch; then
-            echo "::error::The Douyin CDN fallback patch needs review for $TAG. No image was published."
-            exit 1
-          fi
-          git apply ../scripts/cdn-fallback/douyin.patch
+          for patch in douyin.patch session-cdn-hosts.patch; do
+            if ! git apply --check "../scripts/cdn-fallback/$patch"; then
+              echo "::error::$patch needs review for $TAG. No image was published."
+              exit 1
+            fi
+            git apply "../scripts/cdn-fallback/$patch"
+          done
           git diff --check
           printf 'revision=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Verify Douyin fallback behavior
+      - name: Verify Douyin fallback and session CDN history
         if: steps.check.outputs.publish == 'true'
         working-directory: upstream
         env:
@@ -110,6 +116,14 @@ jobs:
             douyin_falls_back_to_blacklisted_cdn_only_when_no_admitted_alternative_exists \
             | tee "$RUNNER_TEMP/cdn-fallback-test.log"
           grep -F '1 passed; 0 failed;' "$RUNNER_TEMP/cdn-fallback-test.log"
+          cargo test --locked -p rust-srec --test e2e --features tls-native-fallback \
+            session_cdn_hosts_merge_all_candidates_across_reconnects \
+            | tee "$RUNNER_TEMP/session-cdn-hosts-test.log"
+          grep -F '1 passed; 0 failed;' "$RUNNER_TEMP/session-cdn-hosts-test.log"
+          cargo test --locked -p platforms-parser --lib --features tls-native-fallback \
+            records_douyin_cdn_hosts_from_all_advertised_pull_sources \
+            | tee "$RUNNER_TEMP/douyin-cdn-hosts-test.log"
+          grep -F '1 passed; 0 failed;' "$RUNNER_TEMP/douyin-cdn-hosts-test.log"
           cargo clean
 
       - name: Build and publish the recorder image
@@ -128,9 +142,28 @@ jobs:
             org.opencontainers.image.version=${{ steps.release.outputs.version }}-cdn-fallback
             io.github.rust-srec.upstream-revision=${{ steps.source.outputs.revision }}
 
-      - name: Record published digest
+      - name: Build and publish the frontend image
+        if: steps.check.outputs.publish == 'true'
+        id: frontend
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: upstream/rust-srec/frontend
+          file: upstream/rust-srec/frontend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.release.outputs.frontend }}
+          build-args: |
+            VITE_UI_BUILD=${{ steps.release.outputs.version }}-cdn-fallback
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}-cdn-fallback
+            io.github.rust-srec.upstream-revision=${{ steps.source.outputs.revision }}
+
+      - name: Record published digests
         if: steps.check.outputs.publish == 'true'
         env:
           DIGEST: ${{ steps.image.outputs.digest }}
+          FRONTEND_DIGEST: ${{ steps.frontend.outputs.digest }}
         run: |
-          printf '\nPublished digest: %s\n' "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          printf '\nPublished recorder digest: %s\n\nPublished frontend digest: %s\n' "$DIGEST" "$FRONTEND_DIGEST" >> "$GITHUB_STEP_SUMMARY"
