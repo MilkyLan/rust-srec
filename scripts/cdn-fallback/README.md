@@ -6,7 +6,7 @@ The scheduled workflow checks once a day and skips versions with both images alr
 
 ## Recording behavior
 
-For a Douyin room, the recorder prefers eligible streams outside the CDN blacklist. When every eligible stream is blacklisted, it tries those streams using the ordinary ranking and emits a warning. Both the built-in extractor and Streamlink use this selection rule. Other platforms continue to enforce the blacklist strictly.
+For a Douyin room, the recorder prefers eligible streams outside the CDN blacklist. The recorder keeps polling when every eligible stream is blacklisted. On the fifth consecutive check that finds the room live and only eligible blacklisted streams, it tries the streams from that check and emits a warning. An offline result, extraction error, or check without eligible streams resets the count. Both the built-in extractor and Streamlink use this selection rule. Other platforms continue to enforce the blacklist strictly.
 
 ## Session CDN hosts
 

@@ -1,6 +1,8 @@
+diff --git a/rust-srec/src/downloader/stream_selector.rs b/rust-srec/src/downloader/stream_selector.rs
+index 8b97208..6ceb964 100644
 --- a/rust-srec/src/downloader/stream_selector.rs
 +++ b/rust-srec/src/downloader/stream_selector.rs
-@@ -36,8 +36,7 @@
+@@ -36,8 +36,7 @@ pub struct StreamSelectionConfig {
      /// Preferred CDN providers in order of preference.
      /// Empty means accept any CDN.
      pub preferred_cdns: Vec<String>,
@@ -10,7 +12,7 @@
      /// Uses substring matching (case-insensitive).
      pub blacklisted_cdns: Vec<String>,
      /// Minimum bitrate in bits per second (0 = no minimum).
-@@ -129,17 +128,28 @@
+@@ -129,17 +128,28 @@ impl StreamSelector {
      /// Sort candidates by preference.
      #[must_use]
      pub fn sort_candidates<'a>(&self, streams: &'a [StreamInfo]) -> Vec<&'a StreamInfo> {
@@ -45,7 +47,7 @@
          if eligible.is_empty() {
              return Vec::new();
          }
-@@ -151,7 +161,7 @@
+@@ -151,7 +161,7 @@ impl StreamSelector {
              .copied()
              .collect();
  
@@ -54,9 +56,15 @@
          let candidates = if filtered.is_empty() {
              debug!(
                  available = eligible.len(),
+diff --git a/rust-srec/src/monitor/detector.rs b/rust-srec/src/monitor/detector.rs
+index 82be7c4..fb044f1 100644
 --- a/rust-srec/src/monitor/detector.rs
 +++ b/rust-srec/src/monitor/detector.rs
-@@ -8,6 +8,7 @@
+@@ -5,9 +5,11 @@
+ use std::collections::HashMap;
+ 
+ use chrono::{DateTime, Utc};
++use parking_lot::Mutex;
  use platforms_parser::extractor::error::ExtractorError;
  use platforms_parser::extractor::factory::{ExtractorFactory, ExtractorSelection};
  use platforms_parser::extractor::platform_extractor::PlatformExtractor;
@@ -64,7 +72,48 @@
  use serde::{Deserialize, Serialize};
  use tracing::{debug, trace, warn};
  
-@@ -478,9 +479,18 @@
+@@ -220,12 +222,15 @@ pub(crate) type TestExtraction = std::sync::Arc<
+         + Sync,
+ >;
+ 
++const DOUYIN_CDN_FALLBACK_CHECKS: u8 = 5;
++
+ /// Stream detector for checking live status.
+ pub struct StreamDetector {
+     request_timeout: std::time::Duration,
+     pool_max_idle_per_host: usize,
+     /// Clients kept for distinct proxies at once.
+     client_cache: ClientCache<ProxyTarget>,
++    douyin_blocked_checks: Mutex<HashMap<String, u8>>,
+     #[cfg(test)]
+     pub(crate) test_extraction: Option<TestExtraction>,
+ }
+@@ -244,6 +249,7 @@ impl StreamDetector {
+             request_timeout,
+             pool_max_idle_per_host,
+             client_cache: ClientCache::new(64),
++            douyin_blocked_checks: Mutex::default(),
+             #[cfg(test)]
+             test_extraction: None,
+         }
+@@ -364,8 +370,14 @@ impl StreamDetector {
+         selection_config: Option<&StreamSelectionConfig>,
+         extractor: &dyn PlatformExtractor,
+     ) -> Result<LiveStatus> {
+-        // Extract media information
+-        let mut media_info = match extractor.extract().await {
++        // Match the room URL so the policy also applies to Streamlink extraction.
++        let is_douyin = douyin::URL_REGEX.is_match(&streamer.url);
++        let media = extractor.extract().await;
++        if is_douyin && !media.as_ref().is_ok_and(|info| info.is_live) {
++            self.douyin_blocked_checks.lock().remove(&streamer.id);
++        }
++
++        let mut media_info = match media {
+             Ok(info) => info,
+             // Fatal errors - these should stop monitoring
+             Err(ExtractorError::StreamerNotFound) => {
+@@ -478,9 +490,46 @@ impl StreamDetector {
                  None => StreamSelector::new(),
              };
  
@@ -72,27 +121,52 @@
 -            // stream may be recorded; other preferences fall back inside it.
 -            let candidates = selector.sort_candidates(&media_info.streams);
 +            let mut candidates = selector.sort_candidates(&media_info.streams);
-+            // Match the room URL so the policy also applies when Streamlink did the extraction.
-+            if candidates.is_empty() && douyin::URL_REGEX.is_match(&streamer.url) {
-+                candidates = selector.sort_cdn_fallback_candidates(&media_info.streams);
-+                if !candidates.is_empty() {
++            if is_douyin {
++                let blocked = if candidates.is_empty() {
++                    selector.sort_cdn_fallback_candidates(&media_info.streams)
++                } else {
++                    Vec::new()
++                };
++                let checks = {
++                    let mut counts = self.douyin_blocked_checks.lock();
++                    if blocked.is_empty() {
++                        counts.remove(&streamer.id);
++                        0
++                    } else {
++                        let count = counts.entry(streamer.id.clone()).or_default();
++                        *count += 1;
++                        let checks = *count;
++                        if checks == DOUYIN_CDN_FALLBACK_CHECKS {
++                            counts.remove(&streamer.id);
++                        }
++                        checks
++                    }
++                };
++                if checks == DOUYIN_CDN_FALLBACK_CHECKS {
 +                    warn!(
 +                        streamer = %streamer.name,
-+                        streams = candidates.len(),
++                        streams = blocked.len(),
++                        checks,
 +                        "No eligible Douyin stream outside the CDN blacklist. Trying blacklisted candidates."
 +                    );
++                    candidates = blocked;
++                } else if checks > 0 {
++                    debug!(
++                        streamer = %streamer.name,
++                        checks,
++                        required = DOUYIN_CDN_FALLBACK_CHECKS,
++                        "Waiting for a Douyin stream outside the CDN blacklist"
++                    );
++                    return Ok(LiveStatus::Offline);
 +                }
 +            }
              if let Some(stream) = candidates.first() {
                  debug!(quality = %stream.quality, "selected stream candidate");
              } else if media_info.streams.iter().any(|s| selector.admits(s)) {
-@@ -758,6 +768,70 @@
+@@ -761,6 +810,94 @@ mod tests {
+         }
+     }
  
-         async fn get_url(&self, _: &mut StreamInfo) -> std::result::Result<(), ExtractorError> {
-             self.urls.lock().unwrap().pop_front().unwrap()
-+        }
-+    }
-+
 +    #[tokio::test]
 +    async fn douyin_falls_back_to_blacklisted_cdn_only_when_no_admitted_alternative_exists() {
 +        let detector = StreamDetector::new();
@@ -104,45 +178,69 @@
 +        let mut blocked = create_test_stream();
 +        blocked.url = "https://blocked.example.com/stream.flv".into();
 +        let allowed = create_test_stream();
-+        let mut opt_in = allowed.clone();
-+        opt_in.format_opt_in = true;
 +        let mut blocked_opt_in = blocked.clone();
 +        blocked_opt_in.format_opt_in = true;
++        let streamer =
++            StreamerMetadata::from_db_model(&crate::database::models::StreamerDbModel::new(
++                "fixture",
++                douyin_url,
++                "fixture-platform",
++            ));
 +
-+        for (room_url, streams, expected) in [
++        let blocked_check = || (Some(true), vec![blocked.clone()], None);
++        let mut checks = vec![
++            blocked_check(),
++            blocked_check(),
 +            (
-+                douyin_url,
-+                vec![blocked.clone()],
-+                Some(blocked.url.as_str()),
-+            ),
-+            (
-+                douyin_url,
++                Some(true),
 +                vec![blocked.clone(), allowed.clone()],
 +                Some(allowed.url.as_str()),
 +            ),
-+            (
-+                douyin_url,
-+                vec![blocked.clone(), opt_in],
-+                Some(blocked.url.as_str()),
-+            ),
-+            (douyin_url, vec![blocked_opt_in], None),
-+            ("https://example.com/channel", vec![blocked.clone()], None),
-+        ] {
-+            let streamer =
-+                StreamerMetadata::from_db_model(&crate::database::models::StreamerDbModel::new(
-+                    "fixture",
-+                    room_url,
-+                    "fixture-platform",
-+                ));
-+            let extractor = FakeExtractor::new(
-+                Ok(
-+                    platforms_parser::media::MediaInfo::builder(room_url, "fixture", "fixture")
-+                        .is_live(true)
++            blocked_check(),
++            blocked_check(),
++            blocked_check(),
++            blocked_check(),
++            (Some(false), Vec::new(), None),
++            blocked_check(),
++            blocked_check(),
++            blocked_check(),
++            blocked_check(),
++            (None, Vec::new(), None),
++            blocked_check(),
++            blocked_check(),
++            blocked_check(),
++            blocked_check(),
++            (Some(true), vec![blocked_opt_in], None),
++        ];
++        checks.extend((0..4).map(|_| blocked_check()));
++        let mut final_blocked = blocked.clone();
++        final_blocked.url = "https://blocked.example.com/fresh.flv".into();
++        checks.push((
++            Some(true),
++            vec![final_blocked.clone()],
++            Some(final_blocked.url.as_str()),
++        ));
++
++        for (is_live, streams, expected) in checks {
++            let media = is_live
++                .map(|is_live| {
++                    platforms_parser::media::MediaInfo::builder(douyin_url, "fixture", "fixture")
++                        .is_live(is_live)
 +                        .streams(streams)
-+                        .build(),
-+                ),
-+                expected.map(|_| Ok(())).into_iter().collect(),
-+            );
++                        .build()
++                })
++                .ok_or_else(|| ExtractorError::Other("fixture extraction failure".into()));
++            let extractor =
++                FakeExtractor::new(media, expected.map(|_| Ok(())).into_iter().collect());
++            if is_live.is_none() {
++                assert!(
++                    detector
++                        .check_status_with_extractor(&streamer, Some(&config), &extractor)
++                        .await
++                        .is_err()
++                );
++                continue;
++            }
 +            let result = detector
 +                .check_status_with_extractor(&streamer, Some(&config), &extractor)
 +                .await
@@ -154,6 +252,9 @@
 +                (LiveStatus::Offline, None) => {}
 +                (status, _) => panic!("unexpected detection status: {status:?}"),
 +            }
-         }
-     }
- 
++        }
++    }
++
+     #[tokio::test]
+     async fn detector_keeps_initial_and_url_authentication_errors_typed() {
+         let streamer =
